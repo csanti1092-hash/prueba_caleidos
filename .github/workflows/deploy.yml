@@ -36,13 +36,19 @@ jobs:
           
       - name: 🧪 Run unit tests
         run: |
-          echo "🔧 Configurando PYTHONPATH..."
+          echo "🔧 Configurando entorno para pytest..."
+    
+          # Establecer PYTHONPATH para la sesión completa
           export PYTHONPATH="${{ github.workspace }}:${PYTHONPATH}"
     
-          echo "🧪 Ejecutando pytest..."
-          # Usar --import-mode=append para que sys.path.insert tenga prioridad
-          python -m pytest tests/test_app.py -v --tb=short --import-mode=append -s
-
+          # Verificar configuración
+          echo "📁 Root del proyecto: ${{ github.workspace }}"
+          echo "📦 PYTHONPATH: $PYTHONPATH"
+    
+          # Ejecutar pytest con configuración explícita
+          # --import-mode=importlib usa el sistema estándar de imports de Python
+          python -m pytest tests/test_app.py -v --tb=short --import-mode=importlib -s
+    
       - name: 🔍 Validate SAM template
         run: |
           sam validate --template template.yaml
