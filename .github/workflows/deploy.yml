@@ -50,17 +50,18 @@ jobs:
     
           echo -e "\n=== 🔄 Probando import ==="
           python -c "
-      import sys, os
-      print(f'CWD: {os.getcwd()}')
-      sys.path.insert(0, os.getcwd())
-      try:
-        from src.app import lambda_handler
-        print('✅ IMPORT EXITOSO')
-      except Exception as e:
-        print(f'❌ ERROR: {type(e).__name__}: {e}')
-        import traceback
-        traceback.print_exc()
-      "
+            import sys, os
+            print(f'CWD: {os.getcwd()}')
+            sys.path.insert(0, os.getcwd())
+            try:
+              from src.app import lambda_handler
+              print('✅ IMPORT EXITOSO')
+            except Exception as e:
+              print(f'❌ ERROR: {type(e).__name__}: {e}')
+              import traceback
+              traceback.print_exc()
+          "
+          
       - name: 🧪 Run unit tests
         run: |
           export PYTHONPATH="${{ github.workspace }}"
