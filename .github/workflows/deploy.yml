@@ -1,3 +1,4 @@
+# .github/workflows/deploy.yml
 name: 🚀 Deploy SAM App
 
 on:
@@ -109,135 +110,86 @@ jobs:
             --parameter-overrides Environment=production
 
       - name: 📤 Export API URL from CloudFormation
-  id: get-api-url  # ← IMPORTANTE: Agregar ID para referenciar outputs
-  run: |
-    echo "🔍 Obteniendo URL del endpoint desde CloudFormation..."
+        run: |
+          echo "🔍 Obteniendo URL del endpoint desde CloudFormation..."
+  
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name "${{ env.SAM_STACK_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'Stacks[0].Outputs[?OutputKey==`HelloApi`].OutputValue' \
+            --output text 2>&1)
+          
+          # Debug: mostrar lo que se obtuvo
+          echo "📡 Raw API_URL output: '$API_URL'"
     
-    STACK_NAME="${{ env.SAM_STACK_NAME }}"
-    AWS_REGION="${{ env.AWS_REGION }}"
+          # Validar que no sea error ni vacío
+          if [ -z "$API_URL" ] || echo "$API_URL" | grep -qi "error\|does not exist"; then
+            echo "❌ No se pudo obtener la API URL"
+            echo "📋 Outputs disponibles del stack:"
+            aws cloudformation describe-stacks \
+              --stack-name "${{ env.SAM_STACK_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Stacks[0].Outputs[*].{Key:OutputKey,Value:OutputValue}' \
+              --output table || echo "Stack no encontrado"
+            exit 1
+        fi
     
-    echo "📋 Parámetros:"
-    echo "   Stack: $STACK_NAME"
-    echo "   Region: $AWS_REGION"
-    
-    # Esperar un momento para que los outputs estén disponibles (eventual consistency)
-    echo "⏳ Esperando 10s para que CloudFormation propague outputs..."
-    sleep 10
-    
-    # Intentar obtener la URL con manejo robusto de errores
-    API_URL=""
-    for retry in 1 2 3; do
-      echo "🔄 Intento $retry de obtener API URL..."
-      
-      API_URL=$(aws cloudformation describe-stacks \
-        --stack-name "$STACK_NAME" \
-        --region "$AWS_REGION" \
-        --query 'Stacks[0].Outputs[?OutputKey==`HelloApi`].OutputValue' \
-        --output text 2>&1) || true
-      
-      # Verificar si es un valor válido (no error, no vacío, no "None")
-      if [ -n "$API_URL" ] && [ "$API_URL" != "None" ] && ! echo "$API_URL" | grep -qi "error\|does not exist"; then
-        echo "✅ API URL obtenida: $API_URL"
-        break
-      fi
-      
-      echo "⚠️ Intento $retry fallido, esperando 5s..."
-      sleep 5
-    done
-    
-    # Validación final
-    if [ -z "$API_URL" ] || [ "$API_URL" = "None" ] || echo "$API_URL" | grep -qi "error"; then
-      echo "❌ ERROR: No se pudo obtener la API URL después de 3 intentos"
-      echo "📋 Debug: Listando outputs del stack:"
-      aws cloudformation describe-stacks \
-        --stack-name "$STACK_NAME" \
-        --region "$AWS_REGION" \
-        --query 'Stacks[0].Outputs' \
-        --output table 2>&1 || echo "Stack no encontrado o sin outputs"
-      exit 1
-    fi
-    
-    # Exportar usando GITHUB_ENV con formato correcto
-    # NOTA: Usar >> para append, y asegurar que no haya espacios alrededor del =
-    echo "API_URL=${API_URL}" >> $GITHUB_ENV
-    
-    # También exportar como output del step para referencia inmediata
-    echo "url=${API_URL}" >> $GITHUB_OUTPUT
-    
-    echo "✅ API_URL exportada correctamente"
-    echo "🔗 URL: $API_URL"
+        # Exportar para el siguiente step usando la sintaxis correcta de GitHub Actions
+        echo "API_URL=$API_URL" >> $GITHUB_ENV
+        echo "✅ API URL exportada: $API_URL"
 
       - name: ✅ Post-deployment validation
-  run: |
-    echo "🔍 Validando endpoint..."
+        run: |
+          echo "🔍 Validando endpoint: $API_URL"
     
-    # Obtener API_URL: primero del environment, luego del step output como fallback
-    ENDPOINT="${API_URL:-${{ steps.get-api-url.outputs.url }}}"
+          # Validar que API_URL no esté vacío (con indentación CORRECTA)
+          if [ -z "$API_URL" ]; then
+            echo "❌ ERROR: API_URL está vacío. Verificar outputs del stack."
+            exit 1
+          fi
     
-    echo "📡 Endpoint a validar: '$ENDPOINT'"
+          # API Gateway puede tardar unos segundos en propagar (eventual consistency)
+          # Intentar hasta 3 veces con espera entre intentos
+          MAX_RETRIES=3
+          RETRY_DELAY=15
     
-    # Validación crítica: si está vacío, fallar inmediatamente con debug
-    if [ -z "$ENDPOINT" ]; then
-      echo "❌ ERROR CRÍTICO: ENDPOINT está vacío"
-      echo "📋 Variables disponibles:"
-      echo "   API_URL (env): '${API_URL}'"
-      echo "   steps.get-api-url.outputs.url: '${{ steps.get-api-url.outputs.url }}'"
-      echo "📋 Contenido de GITHUB_ENV:"
-      cat $GITHUB_ENV 2>/dev/null || echo "(no accessible)"
-      exit 1
-    fi
-    
-    # API Gateway puede tardar en propagar: reintentos con backoff
-    MAX_RETRIES=5
-    RETRY_DELAY=10
-    
-    for attempt in $(seq 1 $MAX_RETRIES); do
-      echo "🔄 Intento $attempt de $MAX_RETRIES..."
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "🔄 Intento $attempt de $MAX_RETRIES..."
       
-      # Ejecutar curl con opciones robustas
-      set +e  # No salir si curl falla
-      HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 --retry 2 "$ENDPOINT" 2>&1)
-      CURL_EXIT=$?
-      set -e  # Restaurar comportamiento normal
+            # Hacer request con timeout y capturar status HTTP
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 "$API_URL" 2>&1)
+            CURL_EXIT_CODE=$?
       
-      if [ $CURL_EXIT -ne 0 ]; then
-        echo "⚠️ curl falló (exit code $CURL_EXIT): $HTTP_RESPONSE"
-      else
-        # Parsear respuesta: última línea es el status HTTP
-        BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
-        STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
+            if [ $CURL_EXIT_CODE -ne 0 ]; then
+              echo "⚠️ curl falló con código $CURL_EXIT_CODE: $HTTP_RESPONSE"
+            else
+              BODY=$(echo "$HTTP_RESPONSE" | head -n1)
+              STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
         
-        echo "📡 HTTP Status: $STATUS"
-        echo "📦 Response Body: $BODY"
+              echo "📡 Response Status: $STATUS"
+              echo "📦 Response Body: $BODY"
         
-        # Validar respuesta exitosa
-        if [ "$STATUS" = "200" ] && echo "$BODY" | grep -q "Hello World"; then
-          echo "✅ Validación exitosa en intento $attempt!"
-          echo "🎉 Endpoint responde correctamente: $BODY"
-          exit 0
-        else
-          echo "⚠️ Respuesta no esperada (Status: $STATUS)"
-        fi
-      fi
+              # Validar respuesta exitosa
+              if [ "$STATUS" = "200" ] && echo "$BODY" | grep -q "Hello World"; then
+                echo "✅ Validación exitosa en intento $attempt: Endpoint responde correctamente"
+                exit 0
+              else
+                echo "⚠️ Respuesta no esperada (intentando de nuevo...)"
+              fi
+            fi
       
-      # Esperar antes del siguiente intento (exponential backoff simple)
-      if [ $attempt -lt $MAX_RETRIES ]; then
-        WAIT_TIME=$((RETRY_DELAY * attempt))
-        echo "⏳ Esperando ${WAIT_TIME}s antes del siguiente intento..."
-        sleep $WAIT_TIME
-      fi
-    done
+            # Esperar antes del siguiente intento (excepto en el último)
+            if [ $attempt -lt $MAX_RETRIES ]; then
+              echo "⏳ Esperando ${RETRY_DELAY}s antes del siguiente intento..."
+              sleep $RETRY_DELAY
+            fi
+          done
     
-    # Todos los intentos fallaron
-    echo "❌ Validación fallida después de $MAX_RETRIES intentos"
-    echo "🔗 Endpoint: $ENDPOINT"
-    echo "📡 Última respuesta: $HTTP_RESPONSE"
-    
-    # Debug adicional: probar con wget como fallback
-    echo "🔍 Probando con wget como diagnóstico..."
-    wget -q -O - "$ENDPOINT" 2>&1 || echo "wget también falló"
-    
-    exit 1
+          # Si llegamos aquí, todos los intentos fallaron
+          echo "❌ Validación fallida después de $MAX_RETRIES intentos"
+          echo "   Última respuesta: $HTTP_RESPONSE"
+          echo "   API URL: $API_URL"
+          exit 1
 
       - name: 📋 Deployment summary
         if: always()
