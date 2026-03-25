@@ -36,7 +36,11 @@ jobs:
 
       - name: 🧪 Run unit tests
         run: |
-          pytest tests/ -v --tb=short
+          # Opción A: Ejecutar pytest desde el root con PYTHONPATH
+          PYTHONPATH=${{ github.workspace }} pytest tests/ -v --tb=short
+    
+          # Opción B: Usar python -m pytest (alternativa)
+          # python -m pytest tests/ -v --tb=short
 
       - name: 🔍 Validate SAM template
         run: |
